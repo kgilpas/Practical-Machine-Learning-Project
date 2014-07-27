@@ -1,0 +1,175 @@
+---
+title: "Practical Machine Learning Project"
+output: html_document
+---
+
+# Predicting Barbell Performance with Accelorometer Data
+
+## Executive Summary
+Recognizing movements performed while exercising can provide feedback to the athlete and improve sports training. Previous studies have been conducted on weight lifting exercises. More information can be found at the [Groupware@LES](h http://groupware.les.inf.puc-rio.br/har). The focus of this report is to create a model that predicts "how well" six participants perform barbell lifts. The participants were asked to perform lifts correctly and incorrectly in five different ways. The classes of the test set to predict are kept blind. The resulting model scored 19/20 correct classes. The GBM modeling tool was used within the caret package of R. The out of sample error is estimated based on the confusion matrix.
+
+## Data Processing
+
+The description of the dataset reads: "Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)." The training dataset contains the exercise performance class to predict (named "classe") and 151 columns of features measured.
+
+```{r}
+# Downloading train and test files from Coursera Weightlifting Exercise
+# Dataset
+fileURL.train <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+fileURL.test <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if (!file.exists("data")) {
+    dir.create("data")
+}
+
+temp.train <- "C:/Users/ENVY/Documents/pml-training.csv"
+download.file(fileURL.train, temp.train)
+temp.test <- "C:/Users/ENVY/Documents/pml-testing.csv"
+download.file(fileURL.test, temp.test)
+
+# Load the data into R
+rawdata.train <- read.csv("C:/Users/ENVY/Documents/pml-training.csv", na.strings = "NA", header = T, 
+    stringsAsFactors = F)
+rawdata.test <- read.csv("C:/Users/ENVY/Documents/pml-testing.csv", na.strings = "NA", header = T, 
+    stringsAsFactors = F)
+names(rawdata.train)
+
+
+```
+
+The datatset was originally used by the authors to characterize the performance classes by identifying the most relevant features. The data comes with the column "new_window" identifying a pre-determined time window to calculate the features of the distributions of the measurements. When "yes", the features fill the columns of max/min value, averag, skewness, etc. Since the test set has only 20 observations to predict with, these columns can not be calculated in the testing phase and so will be dropped in the training phase.
+
+```{r}
+# Remove all feature columns
+feature.cols <- grep("^max|^min|^ampl|^var|^avg|^stdd|^ske|^kurt", names(rawdata.train))
+tidy <- rawdata.train[-feature.cols]
+tidy$classe <- factor(tidy$classe)
+
+```
+
+## Exploring Predictors and Response
+
+Predictors (52) and response (1 with 5 levels) were assigned before starting training. The tidy dataset was partitioned to create a sample for training (75%) and a sample for validation. The training sample was used for further exploring. The validation data was kept untouched.
+
+```{r}
+require(caret)
+predictors.names <- names(tidy)[8:59]
+response.names <- "classe"
+
+predictors <- tidy[predictors.names]
+response <- tidy[[response.names]]
+
+# Partition data set for training and validation
+inTrain <- createDataPartition(response, p = 3/4, list = F)
+trainPred <- predictors[inTrain, ]
+testPred <- predictors[-inTrain, ]
+trainResp <- response[inTrain]
+testResp <- response[-inTrain]
+
+
+```
+
+The performance classes in the response appear slightly unbalanced with class _A_ having more observations.
+
+```{r}
+plot(trainResp, xlab = "Performance Class", ylab = "Counts",main="Class count")
+
+```
+
+All the predictors were plotted to identify any extreme value. Raw plots highlighted few cases of abnormal values. An example is shown below. These values were removed from the dataset.
+
+```{r}
+# Explore histos. Do we need additional transformations?
+par(mfrow = c(1, 2))
+for (i in 1:ncol(trainPred)) {
+    if (names(trainPred[i]) == "magnet_dumbbell_y") {
+        hist(trainPred[[i]], xlab = names(trainPred[i]), main = names(trainPred[i]))
+        plot(trainPred[[i]], main = names(trainPred[i]))
+        # qqnorm(trainPred[[i]], main=names(trainPred[i]))
+    }
+}
+
+```
+
+```{r}
+# Abnormal values removal
+abn.rows <- trainPred$gyros_dumbbell_y > 10 | trainPred$gyros_forearm_z > 50 | 
+    trainPred$gyros_forearm_y > 50 | trainPred$gyros_forearm_x < -10 | trainPred$total_accel_forearm > 
+    100 | trainPred$magnet_dumbbell_y < -2000
+
+trainPred <- trainPred[!abn.rows, ]
+trainResp <- trainResp[!abn.rows]
+
+```
+
+## Preprocessing
+
+The training sample was preprocessed to reduce the number of variables. All predictors were scaled and centered. A PCA was performed to keep the principal components explaining 90% of the data variation in the predictors. 
+
+```{r}
+preObj <- preProcess(x = trainPred, method = c("center", "scale", "pca"), thresh = 0.9)
+trainPred.pre <- predict(preObj, trainPred)
+print(preObj)
+
+```
+
+## Modeling
+
+Since many trials were needed during the optimization phase of the GBM modeling tool, only ¼ of the whole dataset was initially used to reduce computation time. Also, preprocessing with PCA was performed to keep fewer components (60% of variation explained). A 5-fold cross-validation was used to estimate the out of sample error. Once the final settings of the GBM model were determined, the model was used to fit the training sample. 
+
+```{r}
+# CV on training data, 5-fold
+train.control <- trainControl(method = "cv", number = 5)
+
+# To use with a smaller dataset gbmGrid <- expand.grid(.interaction.depth =
+# c(1,3,5,7,10,15,20), .n.trees = (1:6)*50, .shrinkage = c(0.1)) Final
+# settings
+gbmGrid <- expand.grid(.interaction.depth = 20, .n.trees = 300, .shrinkage = 0.1)
+
+gbmFit <- train(trainPred.pre, trainResp, method = "gbm", trControl = train.control, 
+    verbose = FALSE, bag.fraction = 0.5, tuneGrid = gbmGrid)  #, metric='Kappa')
+gbmFit
+# plot(gbmFit, metric='Accuracy')
+
+```
+
+## Model Performace - Validation Sample
+
+The model created was used to predict the "classe" variable of the validation set. The confusion matrix below shows the expected prediction performance on an independent set. The accuracy shows the expected out of sample error expected when predicting on an independent sample.
+
+```{r}
+# Since there was preProc, use this info here
+models <- list(gbm = gbmFit)
+testPred.pre <- predict(preObj, testPred)
+predict.test <- predict(models, newdata = testPred.pre)
+predict.test.values <- extractPrediction(models, testX = testPred.pre, testY = testResp)
+# head(predict.test.values)
+testValue.test <- subset(predict.test.values, dataType == "Test")
+# table(testValue.test)
+
+conf <- caret::confusionMatrix(testValue.test$obs, testValue.test$pred)
+conf
+
+```
+
+## Model performance on the Test dataset
+
+The model was used to predict the "classe" variable kept blind in the test dataset of 20 observations. The final result returned 19 out of 20 classes correctly predicted. The class submitted for the wrong prediction was "C". In fact, the false positive rate for class "C" is the highest and for 20 observations, there is a non-negligible chance to predict this class wrongly.
+
+```{r,cache=FALSE,echo=TRUE}
+setwd("C:/Users/ENVY/Desktop/testcase")
+answers <- predict(gbmFit,rawdata.test)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+
+```
+
+
+
+
