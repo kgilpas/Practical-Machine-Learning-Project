@@ -157,8 +157,23 @@ conf
 The model was used to predict the "classe" variable kept blind in the test dataset of 20 observations. The final result returned 19 out of 20 classes correctly predicted. The class submitted for the wrong prediction was "C". In fact, the false positive rate for class "C" is the highest and for 20 observations, there is a non-negligible chance to predict this class wrongly.
 
 ```{r,cache=FALSE,echo=TRUE}
+
 setwd("C:/Users/ENVY/Desktop/testcase")
-answers <- predict(gbmFit,rawdata.test)
+# Remove all feature columns
+feature.cols <- grep("^max|^min|^ampl|^var|^avg|^stdd|^ske|^kurt", names(rawdata.test))
+tidy <- rawdata.test[-feature.cols]
+# Abnormal values removal
+abn.rows <- tidy$gyros_dumbbell_y > 10 | tidy$gyros_forearm_z > 50 | 
+    tidy$gyros_forearm_y > 50 | tidy$gyros_forearm_x < -10 | tidy$total_accel_forearm > 
+    100 | tidy$magnet_dumbbell_y < -2000
+
+tPred <- tidy[!abn.rows, ]
+tPred<-tPred[,-c(1:6,60)]
+preObj <- preProcess(x = tPred, method = c("center", "scale", "pca"), thresh = 0.9)
+tPred.pre <- predict(preObj, tPred)
+
+answers <- predict(gbmFit, newdata = tPred.pre)
+answers
 pml_write_files = function(x){
   n = length(x)
   for(i in 1:n){
@@ -167,6 +182,7 @@ pml_write_files = function(x){
   }
 }
 pml_write_files(answers)
+
 
 ```
 
